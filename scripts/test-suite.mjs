@@ -377,5 +377,81 @@ await test("11. Native agy statusLine (OMP v19 / Tern bar), title script, and se
   assert.equal(cleaned.showThinking, true);
 });
 
+// 12. Real Tern Surface Protocol (TSP v1) client, reconciler, input demuxer & shell integration
+await test("12. Native Tern Surface Protocol (TSP v1) handshake, reconciler, input demuxer & shell installer", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { TspSurfaceSession, encodeTspJson, TernInputDemuxer } = await import("./lib/tsp-client.mjs");
+  const { installTernShellIntegration, uninstallTernShellIntegration } = await import("./install-ui.mjs");
+
+  // Demuxer handles APC TSP events, Kitty CSI-u keys, and bracketed paste cleanly
+  const demux = new TernInputDemuxer();
+  const sample =
+    encodeTspJson("r", { r: "hello", v: 1, term: "tern", kinds: ["col", "row", "editor", "md", "tool", "picker", "effort"], features: ["edit", "undo", "send"], apc: 65536, credits: 2, cols: 120, dark: true }) +
+    "\x1b[13;2u" +
+    "\x1b[200~hello\nworld\x1b[201~" +
+    encodeTspJson("e", { ev: "send", sf: "s:1", id: "composer.input", text: "refactor auth" });
+  const parsed = demux.feed(sample);
+  assert.equal(parsed[0].type, "tsp");
+  assert.equal(parsed[0].data.r, "hello");
+  assert.equal(parsed[1].type, "key");
+  assert.equal(parsed[1].key.name, "enter");
+  assert.equal(parsed[1].key.shift, true);
+  assert.equal(parsed[2].type, "paste");
+  assert.equal(parsed[2].text, "hello\nworld");
+  assert.equal(parsed[3].type, "tsp");
+  assert.equal(parsed[3].data.ev, "send");
+
+  // Live session handshake + incremental text append diffing
+  const fakeIn = new EventEmitter();
+  fakeIn.isTTY = true;
+  fakeIn.setRawMode = () => {};
+  fakeIn.resume = () => {};
+  const writes = [];
+  const fakeOut = { isTTY: true, columns: 120, write: (s) => writes.push(String(s)) };
+
+  const sess = new TspSurfaceSession({ input: fakeIn, output: fakeOut, app: "omp", version: "1.2.0" });
+  const connPromise = sess.connect(1000);
+  // Simulate Tern replying to hello
+  fakeIn.emit(
+    "data",
+    encodeTspJson("r", { r: "hello", v: 1, term: "tern", kinds: ["col", "row", "md", "editor", "tool", "picker", "effort"], features: ["edit", "undo", "send"], credits: 4 })
+  );
+  assert.equal(await connPromise, true);
+  sess.open({ id: "s:1", mode: "inline", title: "agy", role: "omp.session", chat: true });
+  sess.render(
+    {
+      main: [{ id: "m1", k: "md", p: { text: "Hello", stream: true } }],
+      dock: [{ id: "composer.input", k: "editor", p: { text: "", cursor: 0, sendable: true } }],
+      layer: [],
+    },
+    "composer.input"
+  );
+  // Frame 2 extends m1.text -> must emit compact `["text","m1","append"," world"]`
+  sess.render(
+    {
+      main: [{ id: "m1", k: "md", p: { text: "Hello world", stream: false } }],
+      dock: [{ id: "composer.input", k: "editor", p: { text: "", cursor: 0, sendable: true } }],
+      layer: [],
+    },
+    "composer.input"
+  );
+  const wireAll = writes.join("");
+  assert.match(wireAll, /"role":"omp\.session","chat":true/);
+  assert.match(wireAll, /\["text","m1","append"," world"\]/);
+  sess.close(true);
+
+  // Shell installer round-trip on temp files
+  const fakeBin = path.join(tmpDir, "bin");
+  const fakeRc = path.join(tmpDir, ".zshrc");
+  fs.writeFileSync(fakeRc, "# existing config\nexport FOO=1\n", "utf8");
+  const shIns = installTernShellIntegration({ pluginRoot: PLUGIN_ROOT, binDir: fakeBin, rcFiles: [fakeRc] });
+  assert.ok(fs.existsSync(shIns.binPath));
+  assert.match(fs.readFileSync(fakeRc, "utf8"), /omp-suite tern-agy/);
+  const shUn = uninstallTernShellIntegration({ binDir: fakeBin, rcFiles: [fakeRc] });
+  assert.equal(shUn.cleanedFiles.length, 1);
+  assert.doesNotMatch(fs.readFileSync(fakeRc, "utf8"), /omp-suite tern-agy/);
+  assert.match(fs.readFileSync(fakeRc, "utf8"), /export FOO=1/);
+});
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
-console.log(`\nDone: ${passed}/11 test suites passed.`);
+console.log(`\nDone: ${passed}/12 test suites passed.`);

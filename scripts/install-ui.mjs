@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /**
- * Wires OMP Suite's native `statusLine` and `title` scripts into
- * `~/.gemini/antigravity-cli/settings.json` so every normal `agy` session
- * automatically renders the newest OMP v19 / Tern statusline and live tray.
+ * Installs OMP Suite's native Antigravity CLI + Tern integrations:
+ *  1. Native `agy` statusLine & terminal title in `~/.gemini/antigravity-cli/settings.json`
+ *  2. Native Tern Chatbox launcher (`~/.local/bin/agy-tern`) + shell hook in `~/.zshrc` / `~/.bashrc`
+ *     so typing `agy` interactively inside Tern automatically launches the real Tern Surface
+ *     Protocol (TSP) `omp.session` chatbox backed by official `agy acp --stdio`!
  *
  * Usage:
- *   node scripts/install-ui.mjs               # Install (preserves existing non-OMP custom statusLine)
- *   node scripts/install-ui.mjs --force       # Overwrite existing statusLine/title
- *   node scripts/install-ui.mjs --uninstall   # Remove OMP Suite statusLine/title entries
+ *   node scripts/install-ui.mjs                # Install native statusLine/title + Tern `agy` chatbox hook
+ *   node scripts/install-ui.mjs --status-only  # Only wire settings.json statusLine/title (no shell rc edit)
+ *   node scripts/install-ui.mjs --force        # Overwrite an existing custom statusLine/title
+ *   node scripts/install-ui.mjs --uninstall    # Cleanly remove all settings.json & shell rc hooks
  */
 
 import fs from "node:fs";
@@ -18,8 +21,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
 
+const BLOCK_START = "# >>> omp-suite tern-agy >>>";
+const BLOCK_END = "# <<< omp-suite tern-agy <<<";
+
 export function resolveSettingsPath(explicitPath) {
-  return explicitPath || process.env.AGY_SETTINGS_PATH || path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json");
+  return (
+    explicitPath ||
+    process.env.AGY_SETTINGS_PATH ||
+    path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json")
+  );
 }
 
 function readSettings(file) {
@@ -52,8 +62,7 @@ export function installNativeUi({ settingsPath, pluginRoot = PLUGIN_ROOT, force 
   let changed = false;
 
   const existingStatusCmd = settings.statusLine?.command || "";
-  const canSetStatus =
-    force || !existingStatusCmd || existingStatusCmd.includes("omp-statusline.mjs");
+  const canSetStatus = force || !existingStatusCmd || existingStatusCmd.includes("omp-statusline.mjs");
 
   if (canSetStatus && existingStatusCmd !== statusCmd) {
     settings.statusLine = {
@@ -99,18 +108,113 @@ export function uninstallNativeUi({ settingsPath } = {}) {
   return { file, changed };
 }
 
-// Run when invoked directly from CLI
+function buildShellSnippet(ternAgyScript) {
+  return `${BLOCK_START}
+# Launch OMP Suite's native Tern Surface Protocol (TSP) chatbox when running \`agy\` interactively in Tern.
+# Subcommands (\`agy plugin\`, \`agy -p\`, \`agy acp\`, etc.) and non-Tern terminals pass straight to stock \`agy\`.
+# Set OMP_PLAIN_AGY=1 or run \`command agy\` anytime for stock CLI mode.
+agy() {
+  if [ -n "$TERN_PANE" ] && [ -t 0 ] && [ -t 1 ] && [ "$OMP_PLAIN_AGY" != "1" ]; then
+    case "\${1:-}" in
+      ""|--continue|-c|--conversation|--agent|--model|--effort|--sandbox|--add-dir|--dangerously-skip-permissions)
+        node "${ternAgyScript}" "$@"
+        return $?
+        ;;
+    esac
+  fi
+  command agy "$@"
+}
+${BLOCK_END}`;
+}
+
+function stripBlock(content) {
+  const re = new RegExp(`\\n?${BLOCK_START}[\\s\\S]*?${BLOCK_END}\\n?`, "g");
+  return content.replace(re, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
+export function installTernShellIntegration({
+  pluginRoot = PLUGIN_ROOT,
+  binDir = path.join(os.homedir(), ".local", "bin"),
+  rcFiles,
+} = {}) {
+  const ternAgyScript = path.resolve(pluginRoot, "scripts", "tern-agy.mjs");
+
+  // 1. Install standalone `~/.local/bin/agy-tern` launcher
+  fs.mkdirSync(binDir, { recursive: true });
+  const binPath = path.join(binDir, "agy-tern");
+  const binContent = `#!/usr/bin/env sh\nexec node "${ternAgyScript}" "$@"\n`;
+  fs.writeFileSync(binPath, binContent, { mode: 0o755 });
+
+  // 2. Patch interactive shell rc file(s) idempotently
+  const targets =
+    rcFiles ||
+    [path.join(os.homedir(), ".zshrc"), path.join(os.homedir(), ".bashrc")].filter((p) => fs.existsSync(p));
+
+  const snippet = buildShellSnippet(ternAgyScript);
+  const updated = [];
+
+  for (const rc of targets) {
+    const prev = fs.existsSync(rc) ? fs.readFileSync(rc, "utf8") : "";
+    const cleaned = stripBlock(prev).trimEnd();
+    const next = `${cleaned}\n\n${snippet}\n`;
+    if (next !== prev) {
+      fs.writeFileSync(rc, next, "utf8");
+      updated.push(rc);
+    }
+  }
+
+  return { binPath, updatedRcFiles: updated };
+}
+
+export function uninstallTernShellIntegration({
+  binDir = path.join(os.homedir(), ".local", "bin"),
+  rcFiles,
+} = {}) {
+  const binPath = path.join(binDir, "agy-tern");
+  if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+
+  const targets =
+    rcFiles ||
+    [path.join(os.homedir(), ".zshrc"), path.join(os.homedir(), ".bashrc")].filter((p) => fs.existsSync(p));
+
+  const cleanedFiles = [];
+  for (const rc of targets) {
+    if (!fs.existsSync(rc)) continue;
+    const prev = fs.readFileSync(rc, "utf8");
+    if (prev.includes(BLOCK_START)) {
+      const next = stripBlock(prev).trimEnd() + "\n";
+      fs.writeFileSync(rc, next, "utf8");
+      cleanedFiles.push(rc);
+    }
+  }
+  return { removedBin: binPath, cleanedFiles };
+}
+
+// CLI entrypoint
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = new Set(process.argv.slice(2));
   if (args.has("--uninstall")) {
-    const res = uninstallNativeUi();
-    console.log(res.changed ? `Removed OMP Suite statusLine/title from ${res.file}` : `Nothing to remove in ${res.file}`);
-  } else {
-    const res = installNativeUi({ force: args.has("--force") });
+    const ui = uninstallNativeUi();
+    const sh = uninstallTernShellIntegration();
     console.log(
-      res.changed
-        ? `Installed native OMP v19 statusLine & title into ${res.file}`
-        : `OMP Suite native statusLine already configured in ${res.file}`
+      `Uninstalled OMP Suite UI (settings changed=${ui.changed}, shell files cleaned=${sh.cleanedFiles.join(", ") || "none"})`
     );
+  } else {
+    const ui = installNativeUi({ force: args.has("--force") });
+    console.log(
+      ui.changed
+        ? `Installed native OMP v19 statusLine & title into ${ui.file}`
+        : `Native OMP v19 statusLine already configured in ${ui.file}`
+    );
+    if (!args.has("--status-only")) {
+      const sh = installTernShellIntegration();
+      console.log(`Installed Tern chatbox launcher: ${sh.binPath}`);
+      if (sh.updatedRcFiles.length > 0) {
+        console.log(`Wired \`agy\` Tern chatbox integration into: ${sh.updatedRcFiles.join(", ")}`);
+        console.log(`Run \`source ${sh.updatedRcFiles[0]}\` (or open a new Tern tab) and type \`agy\`!`);
+      } else {
+        console.log("Shell hook already up to date.");
+      }
+    }
   }
 }

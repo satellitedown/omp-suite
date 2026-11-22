@@ -1,42 +1,39 @@
 # OMP Suite (`omp-suite`)
 
-> **The Top 10 capabilities of [Oh My Pi (`omp`)](https://github.com/can1357/oh-my-pi) integrated directly into `agy` — zero extra commands to launch, zero external dependencies, 100% sanctioned.**
+> **Turn `agy` inside [Tern](https://stencil.so/tern) into the exact native Oh My Pi (`omp`) chatbox experience — plus all Top 10 `omp` capabilities as a 100% sanctioned, zero-dependency Antigravity plugin.**
 
 [![Antigravity Plugin](https://img.shields.io/badge/Antigravity-Plugin%20v1-0088fa?style=flat&labelColor=18181e)](https://antigravity.google/docs/plugins)
+[![Tern Surface Protocol](https://img.shields.io/badge/Tern-Native%20TSP%20v1%20Chatbox-f472d0?style=flat&labelColor=18181e)](https://github.com/stencil-hq/tern-sdk)
 [![MCP Apps](https://img.shields.io/badge/MCP%20Apps-io.modelcontextprotocol%2Fui-89d281?style=flat&labelColor=18181e)](https://antigravity.google/docs/mcp-apps)
-[![Native StatusLine](https://img.shields.io/badge/agy%20CLI-Native%20OMP%20v19%20StatusLine-febc38?style=flat&labelColor=18181e)](https://antigravity.google/docs/cli/statusline)
-[![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20(Node%20built--ins)-b281d6?style=flat&labelColor=18181e)](#)
-[![License: MIT](https://img.shields.io/badge/license-MIT-89d281?style=flat&labelColor=18181e)](LICENSE)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20(Node%20built--ins)-febc38?style=flat&labelColor=18181e)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-b281d6?style=flat&labelColor=18181e)](LICENSE)
 
 ---
 
-## Install Once — Just Run `agy` Normally
+## Install Once — Type `agy` Normally
 
 ```bash
 agy plugin install https://github.com/satellitedown/omp-suite
+node ~/.gemini/config/plugins/omp-suite/scripts/install-ui.mjs
 ```
 
-That's it. Next time you run **`agy`**, `omp-suite` automatically:
+Reload your shell (`source ~/.zshrc`) or open a new **Tern** tab and type **`agy`**:
 
-1. **Wires the newest OMP v19 / Tern Status Line & Window Title natively into `agy`** (via Antigravity's official `statusLine` and `title` settings in `~/.gemini/antigravity-cli/settings.json`) — pinned permanently at the bottom of `agy`'s own TUI chrome, updating live as you work.
-2. **Enables all 10 `omp` capabilities automatically behind the scenes** via bundled MCP tools, lifecycle hooks, subagents, and always-on rules — no manual commands or wrappers required.
-
-```text
- ◉ reviewer  │  ◆ AST: 1 proposed (3 hits)  │  ◉ DAP: xorshift32:6  │  ✕ diag: 0  │  ✦ 4 mem
-╰─ π ❯  ⚙ Gemini 4 Neon ⚡ · ● xhigh  📁 my-app  ⎇ main *1 +2  ◫ 4.3%/1M ✦  $0.45 (sub) ──── Refactor Auth ─╯
-```
+- **Inside Tern (`$TERN_PANE` active)**: `agy` launches **`scripts/tern-agy.mjs`**, speaking **real Tern Surface Protocol (TSP v1)** (`role: "omp.session"`, `chat: true`) directly to Tern and driving the official **`agy acp --stdio`** backend. You get Tern's **exact native `omp` chatbox**:
+  - `omp.welcome` hero card with Tern's built-in gradient mark
+  - Native `omp.editor` multiline chatbox composer with top context-window hairline meter, mouse selection, paste, and Enter / Shift+Enter
+  - Clickable model + animated effort chip (`Ctrl+P` or click) opening Tern's native `picker` overlay to switch Antigravity models live
+  - User prompt bubbles (`omp.user`), collapsible thinking blocks (`omp.thinking`), 60fps streaming Markdown, native collapsible `tool` cards (`diff`/`ansi`), and interactive modal permission & staged AST Accept/Reject sheets
+- **Subcommands (`agy plugin`, `agy -p`, `agy acp`, etc.) & non-Tern terminals**: pass straight through to stock `agy` automatically (with our native OMP v19 `statusLine` & `title` active in stock `agy` too!).
+- Need stock `agy` inside Tern anytime? Run `OMP_PLAIN_AGY=1 agy` or `command agy`.
 
 ---
 
-## Why This Is 100% Sanctioned & ToS-Safe
+## 100% Sanctioned & ToS-Safe
 
-Google Antigravity's Terms of Service prohibit third-party wrappers or proxies that intercept or reroute Antigravity OAuth tokens. **`omp-suite` never touches OAuth credentials or private APIs.** Every feature runs strictly through official Antigravity APIs:
-
-- **Native CLI `statusLine` & `title`** (`~/.gemini/antigravity-cli/settings.json`)
-- **MCP Server + MCP Apps** (`mcp_config.json`, `io.modelcontextprotocol/ui`, `com.google.antigravity/ui`)
-- **Lifecycle Hooks** (`hooks.json`: `SessionStart`, `PreToolUse`, `PostToolUse`, `PreInvocation`, `Stop`)
-- **Custom Subagents** (`agents/omp-advisor.md`, `agents/omp-reviewer.md`)
-- **Rules & Skills** (`rules/AGENTS.md`, `skills/*/SKILL.md`)
+Google Antigravity's Terms of Service prohibit third-party wrappers or proxies that intercept or reroute Antigravity OAuth tokens. **`omp-suite` never touches OAuth credentials or private APIs.**
+- The **Tern native chatbox** is a pure **ACP client** speaking standard JSON-RPC to the official **`agy acp --stdio`** server (the exact protocol documented for Zed, JetBrains, VS Code, etc.).
+- Every tool, hook, subagent, statusline, and MCP App uses Google's official Antigravity plugin & CLI APIs.
 
 ---
 
@@ -53,29 +50,16 @@ Google Antigravity's Terms of Service prohibit third-party wrappers or proxies t
 | **7** | **Curated Project-Scoped Memory Bank** | Workspace-scoped SQLite (`node:sqlite`, with JSON fallback) store (`memory_retain`, `memory_recall`, `memory_reflect`, `memory_learn` with `SKILL.md` promotion, `memory_edit`), auto-injected at `SessionStart`. |
 | **8** | **Unified Virtual URI Filesystem & Merge Conflict Resolver** | `vread` / `vwrite` / `conflict_resolve` across `pr://<n>`, `issue://<n>`, `conflict://N` / `conflict://*` (`@ours`, `@theirs`, `@base`, `@both`), `sqlite://<db>[/table]`, `archive://<zip\|tar>`, and `https://` → Markdown. |
 | **9** | **Advisor Watchdog, P0–P3 Verdict Review & Atomic Commit Splitter** | Bundled `omp-advisor` (`aside`/`concern`/`blocker` cards) & `omp-reviewer` (P0–P3 confidence-scored Ship/Needs Changes/Block verdicts), plus `git_atomic_plan` (excludes lockfiles, dependency-orders commits). |
-| **10** | **Newest OMP v19 / Tern-Style UI (Native CLI + App MCP App)** | **(A) Native `agy` CLI StatusLine & Tern Live Tray** auto-configured in `settings.json` with OKLCH per-session accent colors, live model/effort/git/context/cost, and active subagent/AST/DAP/diag tray pills; **(B) Antigravity App MCP App (`omp_hud`)** for interactive Side Panel (`aux_pane`) & Full Page (`global`) views; **(C) Optional standalone `agy acp` TUI (`scripts/omp-tui.mjs`)**. |
+| **10** | **Native Tern `omp.session` Chatbox + `agy` StatusLine + App MCP App** | **(A) Native Tern Chatbox (`scripts/tern-agy.mjs`)**: real Tern Surface Protocol (TSP v1) UI driving official `agy acp --stdio`; **(B) Stock `agy` Native StatusLine & Title (`scripts/omp-statusline.mjs`)** for non-Tern terminals; **(C) Antigravity App MCP App (`omp_hud`)** for interactive Side Panel (`aux_pane`) & Full Page (`global`) views. |
 
 ---
 
-## Managing the Native `agy` Status Line
+## Uninstall / Revert Anytime
 
-When `omp-suite` starts its first session, it automatically adds `statusLine` and `title` to `~/.gemini/antigravity-cli/settings.json` (never overwriting an unrelated custom status line you already configured).
-
-- **Toggle off/on inside `agy`**: `/statusline off` / `/statusline on`
-- **Revert to default `agy` status line**: `/statusline delete` (or `node ~/.gemini/config/plugins/omp-suite/scripts/install-ui.mjs --uninstall`)
-- **Opt out of auto-wiring**: set `OMP_NO_AUTO_STATUSLINE=1`
-- **Force re-wire over an existing custom status line**: `node ~/.gemini/config/plugins/omp-suite/scripts/install-ui.mjs --force`
-
----
-
-## Optional Slash Commands & Bundled Agents
-
-Everything activates automatically during normal prompts, and you can also invoke workflows explicitly anytime:
-- `/omp-review` — P0–P3 confidence-scored verdict code review
-- `/omp-commit` — Dependency-ordered atomic commit plan
-- `/omp-debug` — Step-through DAP debugging workflow
-- `/omp-rules` — Add/manage dormant TTSR guardrails
-- `/omp-hud` — Open the interactive MCP App HUD (Antigravity App) or inspect statusline config
+```bash
+node ~/.gemini/config/plugins/omp-suite/scripts/install-ui.mjs --uninstall
+agy plugin uninstall omp-suite
+```
 
 ---
 
