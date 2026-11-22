@@ -9,7 +9,7 @@ export function resolveDataDir(explicitDir) {
     explicitDir ||
     process.env.OMP_SUITE_DATA_DIR ||
     process.env.PLUGIN_DATA ||
-    path.join(os.homedir(), ".gemini", "antigravity-cli", "plugin-data", "omp-suite");
+    path.join(os.homedir(), ".gemini", "antigravity-cli", "plugin_data", "omp-suite");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -144,4 +144,25 @@ export function getGitTelemetry(cwd) {
     // Not a git repo or git unavailable
   }
   return info;
+}
+
+export function getCachedGitTelemetry(cwd, ttlMs = 1500) {
+  const target = path.resolve(cwd || process.cwd());
+  const key = crypto.createHash("sha256").update(target).digest("hex").slice(0, 10);
+  const cacheFile = path.join(os.tmpdir(), `omp-suite-git-${key}.json`);
+  try {
+    const stat = fs.statSync(cacheFile);
+    if (Date.now() - stat.mtimeMs < ttlMs) {
+      return JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    }
+  } catch {
+    // cache miss
+  }
+  const fresh = getGitTelemetry(target);
+  try {
+    fs.writeFileSync(cacheFile, JSON.stringify(fresh), "utf8");
+  } catch {
+    // ignore cache write failure
+  }
+  return fresh;
 }

@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "omp-suite",
   "displayName": "OMP Suite",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Top 10 Oh My Pi capabilities for Antigravity: hashline edits, staged AST codemods, LSP/DAP, persistent eval, TTSR rules, memory bank, virtual URIs, atomic commits, and an OMP v19/Tern HUD + ACP TUI.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

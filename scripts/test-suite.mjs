@@ -218,7 +218,7 @@ await test("7. Project memory bank retain/recall/reflect/learn/edit + SessionSta
 
   const sessOut = execFileSync(process.execPath, [path.join(__dirname, "hook-session-start.mjs")], {
     input: JSON.stringify({ cwd: repoDir, modelName: "Gemini 4" }),
-    env: { ...process.env, OMP_SUITE_DATA_DIR: dataDir },
+    env: { ...process.env, OMP_SUITE_DATA_DIR: dataDir, OMP_NO_AUTO_STATUSLINE: "1" },
     encoding: "utf8",
   });
   const sessJson = JSON.parse(sessOut);
@@ -326,5 +326,56 @@ await test("10. Unified MCP server (tools + ui://omp-suite/hud.html) + OMP TUI s
   });
 });
 
+// 11. Native `agy` statusLine + title + install-ui.mjs auto-wiring
+await test("11. Native agy statusLine (OMP v19 / Tern bar), title script, and settings.json installer", async () => {
+  const samplePayload = {
+    cwd: repoDir,
+    conversation_id: "test-conv-1",
+    conversation_title: "Refactor Auth Middleware",
+    model: { id: "gemini-4-neon-xhigh", display_name: "Gemini 4 Neon (XHigh)", effort: "xhigh" },
+    workspace: { current_dir: repoDir, project_dir: repoDir },
+    context_window: { context_window_size: 1048576, used_percentage: 4.3 },
+    cost: { total_usd: 0.45 },
+    plan_tier: "Ultra",
+    agent_state: "working",
+    subagents: [{ name: "omp-reviewer", role: "reviewer", status: "running" }],
+    terminal_width: 120,
+  };
+  const statusOut = execFileSync(process.execPath, [path.join(__dirname, "omp-statusline.mjs")], {
+    input: JSON.stringify(samplePayload),
+    env: { ...process.env, OMP_SUITE_DATA_DIR: dataDir },
+    encoding: "utf8",
+  });
+  assert.match(statusOut, /π/);
+  assert.match(statusOut, /Gemini 4 Neon/);
+  assert.match(statusOut, /xhigh/);
+  assert.match(statusOut, /4\.3%\/1M/);
+  assert.match(statusOut, /\$0\.45 \(sub\)/);
+  assert.match(statusOut, /Refactor Auth Middleware/);
+  assert.match(statusOut, /reviewer/);
+
+  const titleOut = execFileSync(process.execPath, [path.join(__dirname, "omp-title.mjs")], {
+    input: JSON.stringify(samplePayload),
+    encoding: "utf8",
+  });
+  assert.match(titleOut, /Refactor Auth Middleware/);
+
+  const fakeSettings = path.join(tmpDir, "settings.json");
+  fs.writeFileSync(fakeSettings, JSON.stringify({ model: "Gemini 4 Neon (XHigh)", showThinking: true }), "utf8");
+  const { installNativeUi, uninstallNativeUi } = await import("./install-ui.mjs");
+  const ins = installNativeUi({ settingsPath: fakeSettings, pluginRoot: PLUGIN_ROOT });
+  assert.equal(ins.changed, true);
+  const after = JSON.parse(fs.readFileSync(fakeSettings, "utf8"));
+  assert.equal(after.showThinking, true);
+  assert.match(after.statusLine.command, /omp-statusline\.mjs/);
+  assert.match(after.title.command, /omp-title\.mjs/);
+
+  const unins = uninstallNativeUi({ settingsPath: fakeSettings });
+  assert.equal(unins.changed, true);
+  const cleaned = JSON.parse(fs.readFileSync(fakeSettings, "utf8"));
+  assert.equal(cleaned.statusLine, undefined);
+  assert.equal(cleaned.showThinking, true);
+});
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
-console.log(`\nDone: ${passed}/10 test suites passed.`);
+console.log(`\nDone: ${passed}/11 test suites passed.`);
