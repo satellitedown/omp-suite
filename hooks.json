@@ -1,0 +1,62 @@
+{
+  "omp-memory-bootstrap": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node ./scripts/hook-session-start.mjs",
+        "timeout": 10
+      }
+    ]
+  },
+  "omp-ttsr-guardrails": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "edit_file|write_file|run_command|.*hashline_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./scripts/hook-pre-tool.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "omp-diagnostics-telemetry": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "edit_file|write_file|run_command|.*hashline_edit|.*ast_resolve|.*conflict_resolve",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./scripts/hook-post-tool.mjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "omp-context-injector": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./scripts/hook-pre-invocation.mjs",
+        "timeout": 10
+      }
+    ]
+  },
+  "omp-stop-gate": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./scripts/hook-stop.mjs",
+        "timeout": 10
+      }
+    ]
+  }
+}

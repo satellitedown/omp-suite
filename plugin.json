@@ -1,0 +1,32 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "omp-suite",
+  "displayName": "OMP Suite",
+  "version": "1.0.0",
+  "description": "Top 10 Oh My Pi capabilities for Antigravity: hashline edits, staged AST codemods, LSP/DAP, persistent eval, TTSR rules, memory bank, virtual URIs, atomic commits, and an OMP v19/Tern HUD + ACP TUI.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the OMP HUD dashboard and summarize this repository's git status, active memories, and diagnostics",
+    "Run /omp-review on my uncommitted changes and return a P0-P3 priority verdict",
+    "Plan atomic commits for my working tree changes using /omp-commit"
+  ],
+  "author": {
+    "name": "satellitedown",
+    "url": "https://github.com/satellitedown"
+  },
+  "homepage": "https://github.com/satellitedown/omp-suite",
+  "repository": "https://github.com/satellitedown/omp-suite",
+  "license": "MIT",
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "hashline",
+    "ast-grep",
+    "lsp",
+    "dap",
+    "debugger",
+    "memory",
+    "tui",
+    "acp"
+  ]
+}
