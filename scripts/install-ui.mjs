@@ -163,11 +163,27 @@ export function installTernShellIntegration({
 } = {}) {
   const ternAgyScript = path.resolve(pluginRoot, "scripts", "tern-agy.mjs");
 
-  // 1. Install standalone `~/.local/bin/agy-tern` launcher
+  // 1. Install standalone `~/.local/bin/agy-tern` and `~/.local/bin/agy-raw` launchers
   fs.mkdirSync(binDir, { recursive: true });
   const binPath = path.join(binDir, "agy-tern");
   const binContent = `#!/usr/bin/env sh\nexec node "${ternAgyScript}" "$@"\n`;
   fs.writeFileSync(binPath, binContent, { mode: 0o755 });
+
+  const rawBinPath = path.join(binDir, "agy-raw");
+  const rawBinContent = `#!/usr/bin/env sh
+_omp_has_settings=0
+for _a in "$@"; do
+  case "$_a" in
+    --settings|--settings=*) _omp_has_settings=1 ;;
+  esac
+done
+export OMP_RAW_AGY=1 OMP_PLAIN_AGY=1 OMP_NO_AUTO_STATUSLINE=1
+if [ "$_omp_has_settings" = "1" ]; then
+  exec agy "$@"
+fi
+exec agy --settings '{"statusLine":{"enabled":false},"title":{"enabled":false}}' "$@"
+`;
+  fs.writeFileSync(rawBinPath, rawBinContent, { mode: 0o755 });
 
   // 2. Patch interactive shell rc file(s) idempotently
   const targets =
@@ -187,7 +203,7 @@ export function installTernShellIntegration({
     }
   }
 
-  return { binPath, updatedRcFiles: updated };
+  return { binPath, rawBinPath, updatedRcFiles: updated };
 }
 
 export function uninstallTernShellIntegration({
@@ -195,7 +211,9 @@ export function uninstallTernShellIntegration({
   rcFiles,
 } = {}) {
   const binPath = path.join(binDir, "agy-tern");
+  const rawBinPath = path.join(binDir, "agy-raw");
   if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+  if (fs.existsSync(rawBinPath)) fs.unlinkSync(rawBinPath);
 
   const targets =
     rcFiles ||

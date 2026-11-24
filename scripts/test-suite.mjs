@@ -446,11 +446,13 @@ await test("12. Native Tern Surface Protocol (TSP v1) handshake, reconciler, inp
   fs.writeFileSync(fakeRc, "# existing config\nexport FOO=1\n", "utf8");
   const shIns = installTernShellIntegration({ pluginRoot: PLUGIN_ROOT, binDir: fakeBin, rcFiles: [fakeRc] });
   assert.ok(fs.existsSync(shIns.binPath));
+  assert.ok(fs.existsSync(shIns.rawBinPath));
   const rcText = fs.readFileSync(fakeRc, "utf8");
   assert.match(rcText, /omp-suite tern-agy/);
   assert.match(rcText, /-raw\|--raw/);
   assert.match(rcText, /OMP_RAW_AGY=1/);
   const shUn = uninstallTernShellIntegration({ binDir: fakeBin, rcFiles: [fakeRc] });
+  assert.ok(!fs.existsSync(shIns.rawBinPath));
   assert.equal(shUn.cleanedFiles.length, 1);
   assert.doesNotMatch(fs.readFileSync(fakeRc, "utf8"), /omp-suite tern-agy/);
   assert.match(fs.readFileSync(fakeRc, "utf8"), /export FOO=1/);
