@@ -112,11 +112,35 @@ function buildShellSnippet(ternAgyScript) {
   return `${BLOCK_START}
 # Launch OMP Suite's native Tern Surface Protocol (TSP) chatbox when running \`agy\` interactively in Tern.
 # Subcommands (\`agy plugin\`, \`agy -p\`, \`agy acp\`, etc.) and non-Tern terminals pass straight to stock \`agy\`.
-# Set OMP_PLAIN_AGY=1 or run \`command agy\` anytime for stock CLI mode.
+# Run \`agy -raw\` or \`agy --raw\` anytime to launch pure stock \`agy\` bypassing OMP Suite UI & hooks.
 agy() {
+  local _omp_raw=0 _omp_has_settings=0 _omp_arg _omp_n _omp_a
+  for _omp_arg in "$@"; do
+    case "$_omp_arg" in
+      -raw|--raw) _omp_raw=1 ;;
+      --settings|--settings=*) _omp_has_settings=1 ;;
+    esac
+  done
+  if [ "$_omp_raw" = "1" ]; then
+    _omp_n=$#
+    while [ "$_omp_n" -gt 0 ]; do
+      _omp_a=$1
+      shift
+      _omp_n=$((_omp_n - 1))
+      if [ "$_omp_a" != "-raw" ] && [ "$_omp_a" != "--raw" ]; then
+        set -- "$@" "$_omp_a"
+      fi
+    done
+    if [ "$_omp_has_settings" = "1" ]; then
+      OMP_RAW_AGY=1 OMP_PLAIN_AGY=1 OMP_NO_AUTO_STATUSLINE=1 command agy "$@"
+    else
+      OMP_RAW_AGY=1 OMP_PLAIN_AGY=1 OMP_NO_AUTO_STATUSLINE=1 command agy --settings '{"statusLine":{"enabled":false},"title":{"enabled":false}}' "$@"
+    fi
+    return $?
+  fi
   if [ -n "$TERN_PANE" ] && [ -t 0 ] && [ -t 1 ] && [ "$OMP_PLAIN_AGY" != "1" ]; then
     case "\${1:-}" in
-      ""|--continue|-c|--conversation|--agent|--model|--effort|--sandbox|--add-dir|--dangerously-skip-permissions)
+      ""|--continue|-c|--conversation|--resume|-r|--agent|--model|--mode|--effort|--sandbox|--add-dir|--dangerously-skip-permissions)
         node "${ternAgyScript}" "$@"
         return $?
         ;;

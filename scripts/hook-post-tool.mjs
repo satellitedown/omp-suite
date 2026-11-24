@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+if (process.env.OMP_RAW_AGY === "1") {
+  process.stdout.write("{}");
+  process.exit(0);
+}
 import fs from "node:fs";
 import path from "node:path";
 import { resolveDataDir, updateState, recordToolActivity } from "./lib/state.mjs";

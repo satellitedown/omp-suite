@@ -323,7 +323,7 @@ export class TernInputDemuxer {
  * minimal `add`, `set`, `text append`, `del`, and `focus` ops under credit flow control.
  */
 export class TspSurfaceSession {
-  constructor({ input = process.stdin, output = process.stdout, app = "omp", version = "1.2.0" } = {}) {
+  constructor({ input = process.stdin, output = process.stdout, app = "omp", version = "1.3.0" } = {}) {
     this.input = input;
     this.output = output;
     this.app = app;
@@ -347,6 +347,7 @@ export class TspSurfaceSession {
     this.lastTree = null;
     this.lastFocus = null;
     this.pendingRender = null;
+    this.renderTimer = null;
     this.escTimer = null;
     this.onEvent = () => {};
     this.onKey = () => {};
@@ -405,6 +406,10 @@ export class TspSurfaceSession {
     if (this.closed) return;
     this.closed = true;
     if (this.escTimer) clearTimeout(this.escTimer);
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
     if (this.opened) {
       this.output.write(encodeTspJson("x", { id: this.surfaceId, keep }, this.caps.apc));
       this.opened = false;
@@ -414,8 +419,22 @@ export class TspSurfaceSession {
     this.input.setRawMode?.(false);
   }
 
+  scheduleRender(fn, delayMs = 16) {
+    if (!this.opened || this.closed) return;
+    if (this.renderTimer) return;
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = null;
+      if (!this.opened || this.closed) return;
+      fn();
+    }, delayMs);
+  }
+
   render(tree, focusId = null) {
     if (!this.opened || this.closed) return;
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
     // Credit-based flow control with 3s stall safeguard
     const now = Date.now();
     if (this.unacked.length >= this.caps.credits && now - this.unacked[0] < 3000) {
@@ -456,25 +475,38 @@ export class TspSurfaceSession {
   _diffChildren(parentId, prevList, nextList, ops) {
     const prevById = new Map(prevList.map((n) => [n.id, n]));
     const nextById = new Map(nextList.map((n) => [n.id, n]));
+    const liveIds = new Set(prevList.map((n) => n.id));
 
     // Delete removed children
     for (const oldNode of prevList) {
       if (!nextById.has(oldNode.id)) {
         ops.push(["del", oldNode.id]);
+        liveIds.delete(oldNode.id);
       }
     }
 
-    // Add new or update existing children in order
+    const findAnchorAfter = (idx) => {
+      for (let j = idx + 1; j < nextList.length; j++) {
+        if (liveIds.has(nextList[j].id)) return nextList[j].id;
+      }
+      return null;
+    };
+
+    // Add new or update existing children in exact target order
     for (let i = 0; i < nextList.length; i++) {
       const nextNode = nextList[i];
       const prevNode = prevById.get(nextNode.id);
-      const beforeId = nextList[i + 1]?.id ?? null;
 
       if (!prevNode) {
-        ops.push(["add", nextNode.id, parentId, beforeId && prevById.has(beforeId) ? beforeId : null, nextNode]);
+        const beforeId = findAnchorAfter(i);
+        ops.push(["add", nextNode.id, parentId, beforeId, nextNode]);
+        liveIds.add(nextNode.id);
       } else if (prevNode.k !== nextNode.k) {
         ops.push(["del", prevNode.id]);
-        ops.push(["add", nextNode.id, parentId, null, nextNode]);
+        liveIds.delete(prevNode.id);
+        const beforeId = findAnchorAfter(i);
+        ops.push(["add", nextNode.id, parentId, beforeId, nextNode]);
+        liveIds.add(nextNode.id);
       } else {
         this._diffNode(prevNode, nextNode, ops);
       }
@@ -487,7 +519,9 @@ export class TspSurfaceSession {
     const changedProps = {};
     let hasPropChange = false;
 
-    const textKind = ["text", "md", "code", "ansi", "editor", "input", "shimmer"].includes(next.k);
+    // Only use incremental `text append` for read-only streaming nodes.
+    // Mutable `editor`/`input` nodes update atomically via `set` to avoid cursor desync.
+    const textKind = ["text", "md", "code", "ansi"].includes(next.k);
     let usedTextAppend = false;
 
     if (

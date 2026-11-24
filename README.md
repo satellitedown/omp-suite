@@ -21,11 +21,12 @@ Reload your shell (`source ~/.zshrc`) or open a new **Tern** tab and type **`agy
 
 - **Inside Tern (`$TERN_PANE` active)**: `agy` launches **`scripts/tern-agy.mjs`**, speaking **real Tern Surface Protocol (TSP v1)** (`role: "omp.session"`, `chat: true`) directly to Tern and driving the official **`agy acp --stdio`** backend. You get Tern's **exact native `omp` chatbox**:
   - `omp.welcome` hero card with Tern's built-in gradient mark
-  - Native `omp.editor` multiline chatbox composer with top context-window hairline meter, mouse selection, paste, and Enter / Shift+Enter
-  - Clickable model + animated effort chip (`Ctrl+P` or click) opening Tern's native `picker` overlay to switch Antigravity models live
-  - User prompt bubbles (`omp.user`), collapsible thinking blocks (`omp.thinking`), 60fps streaming Markdown, native collapsible `tool` cards (`diff`/`ansi`), and interactive modal permission & staged AST Accept/Reject sheets
+  - Native `omp.editor` multiline chatbox composer with top context-window hairline meter, mouse selection, paste, live `tok/s` generation rate, clickable **Usage** readout, and Enter / Shift+Enter
+  - **`Shift+Tab`** cycles thinking effort (`low` → `medium` → `high` → `xhigh`); **`Alt+M`** (or clicking the Mode pill) cycles execution modes (`default` → `accept-edits` → `auto` → `plan`); **`Ctrl+P`** opens the native Model Picker
+  - Full official ACP command integration: **`/plan`** (toggle or `/plan <task>`), **`/resume`** (native conversation picker via `session/list` + `session/load`), **`/usage`** (context fill, input/output/cached tokens, cache hit %, and today's local usage), **`/mode`**, **`/effort`**, **`/model`**, **`/help`**, plus **`Tab` on `/`** for a searchable Slash Command & Skills picker
+  - User prompt bubbles (`omp.user`) with copy button, collapsible thinking blocks (`omp.thinking`), 60fps streaming Markdown, native collapsible `tool` cards (`diff`/`ansi`), and interactive modal permission & staged AST Accept/Reject sheets
 - **Subcommands (`agy plugin`, `agy -p`, `agy acp`, etc.) & non-Tern terminals**: pass straight through to stock `agy` automatically (with our native OMP v19 `statusLine` & `title` active in stock `agy` too!).
-- Need stock `agy` inside Tern anytime? Run `OMP_PLAIN_AGY=1 agy` or `command agy`.
+- **Launch completely raw stock `agy` anytime (no plugin UI or hooks)**: run **`agy -raw`** or **`agy --raw`** (works with extra flags too, e.g. `agy -raw -c`).
 
 ---
 

@@ -446,12 +446,128 @@ await test("12. Native Tern Surface Protocol (TSP v1) handshake, reconciler, inp
   fs.writeFileSync(fakeRc, "# existing config\nexport FOO=1\n", "utf8");
   const shIns = installTernShellIntegration({ pluginRoot: PLUGIN_ROOT, binDir: fakeBin, rcFiles: [fakeRc] });
   assert.ok(fs.existsSync(shIns.binPath));
-  assert.match(fs.readFileSync(fakeRc, "utf8"), /omp-suite tern-agy/);
+  const rcText = fs.readFileSync(fakeRc, "utf8");
+  assert.match(rcText, /omp-suite tern-agy/);
+  assert.match(rcText, /-raw\|--raw/);
+  assert.match(rcText, /OMP_RAW_AGY=1/);
   const shUn = uninstallTernShellIntegration({ binDir: fakeBin, rcFiles: [fakeRc] });
   assert.equal(shUn.cleanedFiles.length, 1);
   assert.doesNotMatch(fs.readFileSync(fakeRc, "utf8"), /omp-suite tern-agy/);
   assert.match(fs.readFileSync(fakeRc, "utf8"), /export FOO=1/);
 });
 
+// 13. v1.3.0 TSP Reconciler Ordering, Shift+Tab, Usage Stats, and `agy -raw` Bypass
+await test("13. TSP reconciler ordering, non-append editor, Shift+Tab keys, usage stats & agy -raw hook bypass", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { TspSurfaceSession, encodeTspJson, TernInputDemuxer } = await import("./lib/tsp-client.mjs");
+  const {
+    readSessionTranscriptUsage,
+    readTodayUsageSummary,
+    formatTokenCount,
+    cycleEffortLevel,
+    cycleModeId,
+  } = await import("./lib/usage-stats.mjs");
+
+  // Shift+Tab decoding for both xterm (`ESC [ Z`) and Kitty CSI-u (`ESC [ 9 ; 2 u`)
+  const demux = new TernInputDemuxer();
+  const keys = demux.feed("\x1b[Z\x1b[9;2u");
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0].key.name, "tab");
+  assert.equal(keys[0].key.shift, true);
+  assert.equal(keys[1].key.name, "tab");
+  assert.equal(keys[1].key.shift, true);
+
+  // Reconciler multi-node insertion ordering & non-append mutable editor updates
+  const fakeIn = new EventEmitter();
+  fakeIn.isTTY = true;
+  fakeIn.setRawMode = () => {};
+  fakeIn.resume = () => {};
+  const frames = [];
+  const fakeOut = { isTTY: true, columns: 120, write: (s) => frames.push(String(s)) };
+  const sess = new TspSurfaceSession({ input: fakeIn, output: fakeOut, app: "omp", version: "1.3.0" });
+  const cp = sess.connect(1000);
+  fakeIn.emit("data", encodeTspJson("r", { r: "hello", v: 1, term: "tern", kinds: ["col", "row", "editor"], credits: 8 }));
+  assert.equal(await cp, true);
+  sess.open({ id: "s:1", mode: "inline", title: "agy", role: "omp.session", chat: true });
+  sess.render(
+    {
+      main: [],
+      dock: [{ id: "c", k: "editor", p: { text: "hi", cursor: 2 } }],
+      layer: [],
+    },
+    "c"
+  );
+  frames.length = 0;
+  // Insert TWO nodes (`a`, `b`) BEFORE existing `c`, and extend editor `c.text`
+  sess.render(
+    {
+      main: [],
+      dock: [
+        { id: "a", k: "badge", p: { text: "A" } },
+        { id: "b", k: "badge", p: { text: "B" } },
+        { id: "c", k: "editor", p: { text: "hi there", cursor: 8 } },
+      ],
+      layer: [],
+    },
+    "c"
+  );
+  const wire = frames.join("");
+  // Both `a` and `b` must anchor before `c` (not null)
+  assert.match(wire, /\["add","a","dock","c",/);
+  assert.match(wire, /\["add","b","dock","c",/);
+  // Editor must update via `set`, NEVER `["text","c","append",...]`
+  assert.doesNotMatch(wire, /\["text","c","append"/);
+  assert.match(wire, /\["set","c",\{"text":"hi there","cursor":8\}\]/);
+  sess.close(true);
+
+  // Local transcript usage aggregation + cycling helpers
+  const fakeBrain = path.join(tmpDir, "brain");
+  const logDir = path.join(fakeBrain, "sess-1", ".system_generated", "logs");
+  fs.mkdirSync(logDir, { recursive: true });
+  const nowIso = new Date().toISOString();
+  fs.writeFileSync(
+    path.join(logDir, "transcript.jsonl"),
+    [
+      JSON.stringify({ type: "PLANNER_RESPONSE", model: "gemini-4-neon-high", input_tokens: 4000, output_tokens: 500, cache_read_tokens: 16000, created_at: nowIso }),
+      JSON.stringify({ type: "PLANNER_RESPONSE", model: "gemini-4-neon-xhigh", input_tokens: 1000, output_tokens: 1000, cache_read_tokens: 19000, created_at: nowIso }),
+    ].join("\n") + "\n",
+    "utf8"
+  );
+  const u = readSessionTranscriptUsage("sess-1", { brainDir: fakeBrain });
+  assert.equal(u.found, true);
+  assert.equal(u.turns, 2);
+  assert.equal(u.inputTokens, 5000);
+  assert.equal(u.outputTokens, 1500);
+  assert.equal(u.cacheReadTokens, 35000);
+  assert.equal(Math.round(u.cacheHitPct), 88);
+  assert.equal(formatTokenCount(41500), "41.5K");
+
+  const today = readTodayUsageSummary({ brainDir: fakeBrain });
+  assert.equal(today.sessionsCount, 1);
+  assert.equal(today.turns, 2);
+  assert.equal(cycleEffortLevel("high"), "xhigh");
+  assert.equal(cycleEffortLevel("xhigh"), "low");
+  assert.equal(cycleModeId("auto"), "plan");
+  assert.equal(cycleModeId("plan"), "default");
+
+  // `OMP_RAW_AGY=1` makes all hooks silent no-ops
+  const rawPre = JSON.parse(
+    execFileSync(process.execPath, [path.join(__dirname, "hook-pre-tool.mjs")], {
+      input: JSON.stringify({ cwd: repoDir, toolCall: { name: "edit_file", args: { Path: "src/main.rs", Replacement: "Box::leak(x)" } } }),
+      env: { ...process.env, OMP_SUITE_DATA_DIR: dataDir, OMP_RAW_AGY: "1" },
+      encoding: "utf8",
+    })
+  );
+  assert.equal(rawPre.decision, "allow");
+  const rawStart = JSON.parse(
+    execFileSync(process.execPath, [path.join(__dirname, "hook-session-start.mjs")], {
+      input: JSON.stringify({ cwd: repoDir }),
+      env: { ...process.env, OMP_SUITE_DATA_DIR: dataDir, OMP_RAW_AGY: "1" },
+      encoding: "utf8",
+    })
+  );
+  assert.deepEqual(rawStart.injectSteps, []);
+});
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
-console.log(`\nDone: ${passed}/12 test suites passed.`);
+console.log(`\nDone: ${passed}/13 test suites passed.`);

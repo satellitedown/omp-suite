@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+if (process.env.OMP_RAW_AGY === "1") {
+  process.stdout.write(JSON.stringify({ injectSteps: [] }));
+  process.exit(0);
+}
 import fs from "node:fs";
 import { resolveDataDir, readState, writeState } from "./lib/state.mjs";
 
