@@ -10,6 +10,215 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+
+const QUOTA_BUCKET_LABELS = {
+  "gemini-5h": { group: "Gemini", window: "5-hour", short: "5h", order: 1 },
+  "gemini-weekly": { group: "Gemini", window: "Weekly", short: "wk", order: 2 },
+  "3p-5h": { group: "Claude / GPT", window: "5-hour", short: "3p 5h", order: 3 },
+  "3p-weekly": { group: "Claude / GPT", window: "Weekly", short: "3p wk", order: 4 },
+};
+
+export function describeQuotaBucket(bucketId) {
+  if (QUOTA_BUCKET_LABELS[bucketId]) return QUOTA_BUCKET_LABELS[bucketId];
+  const parts = String(bucketId || "").split("-");
+  const rawGroup = parts[0] || bucketId;
+  const rawWin = parts.slice(1).join("-") || "quota";
+  const group = rawGroup === "3p" ? "Claude / GPT" : rawGroup.charAt(0).toUpperCase() + rawGroup.slice(1);
+  const window = rawWin === "5h" ? "5-hour" : rawWin.charAt(0).toUpperCase() + rawWin.slice(1);
+  return { group, window, short: rawWin, order: 50 };
+}
+
+export function formatResetCountdown(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s < 60) return "<1m";
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  return `${mins}m`;
+}
+
+export function normalizeQuotaBuckets(quotaObj, nowMs = Date.now()) {
+  if (!quotaObj || typeof quotaObj !== "object") return [];
+  const rows = [];
+  for (const [id, info] of Object.entries(quotaObj)) {
+    if (!info || typeof info !== "object") continue;
+    const meta = describeQuotaBucket(id);
+    const hasFrac = typeof info.remaining_fraction === "number" && Number.isFinite(info.remaining_fraction);
+    const remainingFraction = hasFrac ? Math.max(0, Math.min(1, info.remaining_fraction)) : null;
+    const remainingPct = remainingFraction !== null ? remainingFraction * 100 : null;
+    let resetSeconds = typeof info.reset_in_seconds === "number" ? info.reset_in_seconds : null;
+    if (info.reset_time) {
+      const ts = Date.parse(info.reset_time);
+      if (Number.isFinite(ts)) {
+        resetSeconds = Math.max(0, Math.round((ts - nowMs) / 1000));
+      }
+    }
+    rows.push({
+      id,
+      group: meta.group,
+      window: meta.window,
+      short: meta.short,
+      order: meta.order,
+      remainingFraction,
+      remainingPct,
+      remainingAmount: typeof info.remaining_amount === "number" ? info.remaining_amount : null,
+      resetTime: info.reset_time || null,
+      resetSeconds,
+      disabled: Boolean(info.disabled),
+    });
+  }
+  rows.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  return rows;
+}
+
+export function getQuotaCachePath(dataDir) {
+  return path.join(dataDir, "quota-cache.json");
+}
+
+export function readCachedQuota(dataDir) {
+  if (!dataDir) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getQuotaCachePath(dataDir), "utf8"));
+    if (parsed && parsed.quota && typeof parsed.quota === "object") return parsed;
+  } catch {
+    // ignore missing or corrupt cache
+  }
+  return null;
+}
+
+export function writeCachedQuota(dataDir, payload) {
+  if (!dataDir || !payload?.quota) return;
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    const target = getQuotaCachePath(dataDir);
+    const tmp = `${target}.${process.pid}.tmp`;
+    const record = {
+      quota: payload.quota,
+      planTier: payload.plan_tier || payload.planTier || null,
+      email: payload.email || null,
+      version: payload.version || null,
+      capturedAt: payload.capturedAt || Date.now(),
+    };
+    fs.writeFileSync(tmp, JSON.stringify(record, null, 2) + "\n", "utf8");
+    fs.renameSync(tmp, target);
+  } catch {
+    // non-fatal
+  }
+}
+
+/**
+ * Fetches live remaining model quota using ONLY Antigravity's official CLI
+ * (`agy --settings '{"statusLine":...}'`) inside a short-lived PTY.
+ * Zero OAuth inspection, zero undocumented APIs — invokes the exact same
+ * official `statusLine` contract documented at antigravity.google/docs/cli/statusline.
+ */
+export async function fetchLiveQuota({ dataDir, maxAgeMs = 0, timeoutMs = 8000 } = {}) {
+  const cached = readCachedQuota(dataDir);
+  if (cached && maxAgeMs > 0 && Date.now() - (cached.capturedAt || 0) <= maxAgeMs) {
+    return { ...cached, fromCache: true };
+  }
+
+  const pyScript = `
+import json, os, pty, select, shutil, subprocess, sys, tempfile, time
+timeout = float(sys.argv[1]) if len(sys.argv) > 1 else 8.0
+tmp = tempfile.mkdtemp(prefix="omp-agy-quota-")
+out_file = os.path.join(tmp, "status.json")
+cap_script = os.path.join(tmp, "cap.sh")
+try:
+    with open(cap_script, "w") as f:
+        f.write('#!/usr/bin/env sh\\ncat > "' + out_file + '.tmp" && mv "' + out_file + '.tmp" "' + out_file + '"\\n')
+    os.chmod(cap_script, 0o755)
+    settings = json.dumps({"statusLine": {"type": "command", "command": cap_script, "enabled": True}})
+    master, slave = pty.openpty()
+    env = dict(os.environ, OMP_RAW_AGY="1", OMP_PLAIN_AGY="1", OMP_NO_AUTO_STATUSLINE="1")
+    proc = subprocess.Popen(["agy", "--settings", settings], stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True)
+    os.close(slave)
+    found = None
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            r, _, _ = select.select([master], [], [], 0.12)
+            if r:
+                try:
+                    os.read(master, 8192)
+                except OSError:
+                    break
+            if os.path.exists(out_file):
+                try:
+                    data = json.load(open(out_file))
+                    if isinstance(data, dict) and data.get("quota"):
+                        found = data
+                        break
+                except Exception:
+                    pass
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            os.close(master)
+        except Exception:
+            pass
+    if found:
+        sys.stdout.write(json.dumps({
+            "quota": found.get("quota"),
+            "planTier": found.get("plan_tier"),
+            "email": found.get("email"),
+            "version": found.get("version"),
+        }))
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+`;
+
+  const live = await new Promise((resolve) => {
+    const child = spawn("python3", ["-c", pyScript, String(Math.max(2, timeoutMs / 1000))], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    const killTimer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // ignore
+      }
+      resolve(null);
+    }, timeoutMs + 2500);
+    child.stdout.on("data", (d) => {
+      stdout += d.toString("utf8");
+    });
+    child.on("error", () => {
+      clearTimeout(killTimer);
+      resolve(null);
+    });
+    child.on("close", () => {
+      clearTimeout(killTimer);
+      try {
+        const parsed = stdout.trim() ? JSON.parse(stdout.trim()) : null;
+        if (parsed?.quota) {
+          resolve({ ...parsed, capturedAt: Date.now(), fromCache: false });
+          return;
+        }
+      } catch {
+        // ignore
+      }
+      resolve(null);
+    });
+  });
+
+  if (live) {
+    writeCachedQuota(dataDir, live);
+    return live;
+  }
+  return cached ? { ...cached, fromCache: true, stale: true } : null;
+}
 
 export function resolveBrainDir(explicitDir) {
   return (

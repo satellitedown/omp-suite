@@ -24,6 +24,10 @@ import { astResolve, astReject } from "./lib/ast-codemod.mjs";
 import {
   readSessionTranscriptUsage,
   readTodayUsageSummary,
+  readCachedQuota,
+  fetchLiveQuota,
+  normalizeQuotaBuckets,
+  formatResetCountdown,
   formatTokenCount,
   formatRelativeTime,
   cycleEffortLevel,
@@ -31,7 +35,7 @@ import {
 } from "./lib/usage-stats.mjs";
 
 const RAW_ARGS = process.argv.slice(2);
-const VERSION = "1.3.1";
+const VERSION = "1.3.2";
 
 // Parse lightweight flags while forwarding ACP-supported flags to `agy acp`
 let cwd = process.cwd();
@@ -66,7 +70,8 @@ const WORKSPACE_DIR = gitInit.root || path.resolve(cwd);
 const LOCAL_COMMANDS = [
   { name: "plan", description: "Toggle Plan mode, or run `/plan <task>` in Plan mode" },
   { name: "resume", description: "Open native picker to load a previous conversation" },
-  { name: "usage", description: "Show context window fill, session tokens, cache hit %, and today's usage" },
+  { name: "usage", description: "Show live remaining model quota & reset timers (alias /quota)" },
+  { name: "quota", description: "Show live remaining model quota & reset timers" },
   { name: "model", description: "Switch active Antigravity model (Ctrl+P)" },
   { name: "effort", description: "Switch model thinking level (low/medium/high/xhigh · Shift+Tab)" },
   { name: "mode", description: "Switch execution mode (default/accept-edits/auto/plan · Alt+M)" },
@@ -115,6 +120,8 @@ const state = {
   usedTokens: 0,
   contextWindow: 1048576,
   sessionUsage: readSessionTranscriptUsage(""),
+  quotaSnapshot: readCachedQuota(DATA_DIR),
+  quotaLoading: false,
   git: gitInit,
   draft: "",
   cursor: 0,
@@ -664,6 +671,37 @@ function buildTspTree(tsp) {
     });
   }
 
+  const quotaRows = normalizeQuotaBuckets(state.quotaSnapshot?.quota);
+  const lowestQuota = quotaRows
+    .filter((b) => !b.disabled && b.remainingPct !== null)
+    .sort((a, b) => a.remainingPct - b.remainingPct)[0];
+
+  if (lowestQuota) {
+    const qPct = Math.round(lowestQuota.remainingPct);
+    const qReset = lowestQuota.resetSeconds !== null ? ` · resets ${formatResetCountdown(lowestQuota.resetSeconds)}` : "";
+    const qTone = qPct <= 10 ? "error" : qPct <= 25 ? "warning" : "dim";
+    const qTooltip = quotaRows
+      .filter((b) => b.remainingPct !== null)
+      .map(
+        (b) =>
+          `${b.group} (${b.window}): ${b.remainingPct.toFixed(0)}% left${b.resetSeconds !== null ? ` (resets in ${formatResetCountdown(b.resetSeconds)})` : ""}`
+      )
+      .join("\n");
+    factSegs.push({
+      id: "fact.quota",
+      k: "seg",
+      p: {
+        role: "omp.composer.fact",
+        priority: 5,
+        tone: qPct <= 10 ? "error" : qPct <= 25 ? "warning" : undefined,
+        title: `${qTooltip}\nClick to refresh /usage`,
+        actions: { click: "open.usage" },
+        spans: [{ t: `quota ${qPct}% (${lowestQuota.short})`, s: qTone }],
+      },
+    });
+    ctxTooltipLines.push(`Lowest quota: ${lowestQuota.group} ${lowestQuota.window} ${qPct}% left${qReset}`);
+  }
+
   const usageLabel =
     sessTotal > 0 ? `${ctxPctText}/${ctxMaxLabel} · ${formatTokenCount(sessTotal)} tok` : `${ctxPctText}/${ctxMaxLabel}`;
   factSegs.push({
@@ -671,8 +709,8 @@ function buildTspTree(tsp) {
     k: "seg",
     p: {
       role: "omp.composer.fact",
-      priority: 5,
-      title: `${ctxTooltipLines.join("\n")}\nClick for full /usage breakdown`,
+      priority: 4,
+      title: `${ctxTooltipLines.join("\n")}\nClick for live /usage & model quotas`,
       actions: { click: "open.usage" },
       spans: [{ t: usageLabel, s: ctxFrac > 0.85 ? "error" : ctxFrac > 0.7 ? "warning" : "dim" }],
     },
@@ -1528,7 +1566,7 @@ async function activatePickerItem(itemId) {
     await loadConversation(itemId, item?.cwd || WORKSPACE_DIR);
   } else if (pk.kind === "command") {
     state.picker = null;
-    const immediateLocal = new Set(["/resume", "/usage", "/model", "/effort", "/mode", "/hud", "/clear", "/help", "/exit", "/plan"]);
+    const immediateLocal = new Set(["/resume", "/usage", "/quota", "/model", "/effort", "/mode", "/hud", "/clear", "/help", "/exit", "/plan"]);
     if (immediateLocal.has(itemId)) {
       state.draft = "";
       state.cursor = 0;
@@ -1542,58 +1580,116 @@ async function activatePickerItem(itemId) {
   }
 }
 
-// --- Rich Usage & Help Cards ---
-function showUsageCard() {
+// --- Rich Live Quota + Usage & Help Cards ---
+function formatQuotaCardBody(snapshot) {
   refreshSessionUsage();
   const u = state.sessionUsage;
   const today = readTodayUsageSummary();
   const ctxFrac = state.contextWindow > 0 ? Math.min(1, state.usedTokens / state.contextWindow) : 0;
   const ctxPct = (ctxFrac * 100).toFixed(1);
-  const bar = renderProgressBar(ctxFrac, 20);
+  const ctxBar = renderProgressBar(ctxFrac, 20);
+  const rows = normalizeQuotaBuckets(snapshot?.quota);
 
-  const lines = [
-    `**Context Window**: \`[${bar}]\` **${ctxPct}%** (${state.usedTokens.toLocaleString()} / ${state.contextWindow.toLocaleString()} tokens)`,
-    `**Active**: \`${state.modelName}\` · effort \`${state.effort}\` · mode \`${state.modeId}\``,
+  const lines = [];
+  if (snapshot?.email || snapshot?.planTier) {
+    const acct = [snapshot.email ? `**${snapshot.email}**` : null, snapshot.planTier ? `Plan: \`${snapshot.planTier}\`` : null]
+      .filter(Boolean)
+      .join(" · ");
+    lines.push(acct, "");
+  }
+
+  lines.push("#### Model Quotas Remaining");
+  if (rows.length > 0) {
+    lines.push("| Model Group | Window | Remaining | Left | Resets |", "| :--- | :--- | :--- | ---: | :--- |");
+    for (const b of rows) {
+      const pct = b.remainingPct !== null ? b.remainingPct : 0;
+      const bar = b.disabled ? "disabled" : `\`${renderProgressBar(pct / 100, 14)}\``;
+      const pctStr = b.disabled
+        ? "disabled"
+        : b.remainingPct !== null
+          ? `**${pct.toFixed(pct < 10 ? 1 : 0)}%**`
+          : b.remainingAmount !== null
+            ? String(b.remainingAmount)
+            : "—";
+      let resetStr = "—";
+      if (b.resetSeconds !== null) {
+        const localAt = b.resetTime
+          ? new Date(b.resetTime).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+          : "";
+        resetStr = localAt ? `in ${formatResetCountdown(b.resetSeconds)} (${localAt})` : `in ${formatResetCountdown(b.resetSeconds)}`;
+      }
+      lines.push(`| ${b.group} | ${b.window} | ${bar} | ${pctStr} | ${resetStr} |`);
+    }
+    const age = snapshot?.capturedAt ? formatRelativeTime(snapshot.capturedAt) : "";
+    if (snapshot?.stale) {
+      lines.push("", `*Showing last cached quota (${age || "older"}) — live refresh timed out.*`);
+    } else if (age) {
+      lines.push("", `*Live quota from Antigravity CLI (${age}).*`);
+    }
+  } else {
+    lines.push("- *Could not read live quota buckets right now. Run `agy -raw` and `/usage` if sign-in is required.*");
+  }
+
+  lines.push(
     "",
-    "#### This Session (Local Antigravity Transcript)",
-  ];
+    "#### Context & Local Token Usage",
+    `- **Context Window**: \`[${ctxBar}]\` **${ctxPct}%** (${state.usedTokens.toLocaleString()} / ${state.contextWindow.toLocaleString()} tokens)`,
+    `- **Active**: \`${state.modelName}\` · effort \`${state.effort}\` · mode \`${state.modeId}\``
+  );
 
   if (u.turns > 0) {
     lines.push(
-      `- **Turns**: ${u.turns} · **Total**: **${formatTokenCount(u.totalTokens)}** tokens`,
-      `- **Input**: ${formatTokenCount(u.inputTokens)} · **Output**: ${formatTokenCount(u.outputTokens)} · **Cache Read**: ${formatTokenCount(u.cacheReadTokens)} (**${u.cacheHitPct.toFixed(1)}%** cache hit)`
+      `- **This Session**: ${u.turns} turns · **${formatTokenCount(u.totalTokens)}** tok (${formatTokenCount(u.inputTokens)} in · ${formatTokenCount(u.outputTokens)} out · ${formatTokenCount(u.cacheReadTokens)} cached, **${u.cacheHitPct.toFixed(0)}%** hit)`
     );
-    const modelRows = Object.entries(u.byModel);
-    if (modelRows.length > 0) {
-      lines.push("", "| Model | Turns | Input | Output | Cached |", "| :--- | ---: | ---: | ---: | ---: |");
-      for (const [m, st] of modelRows) {
-        lines.push(
-          `| \`${m}\` | ${st.turns} | ${formatTokenCount(st.inputTokens)} | ${formatTokenCount(st.outputTokens)} | ${formatTokenCount(st.cacheReadTokens)} |`
-        );
-      }
-    }
-  } else {
-    lines.push("- *No completed model turns recorded in this session yet.*");
   }
-
-  lines.push("", "#### Today Across Local Sessions");
   if (today.turns > 0) {
     lines.push(
-      `- **Sessions**: ${today.sessionsCount} · **Turns**: ${today.turns} · **Total**: **${formatTokenCount(today.totalTokens)}** tokens`,
-      `- **Input**: ${formatTokenCount(today.inputTokens)} · **Output**: ${formatTokenCount(today.outputTokens)} · **Cache Read**: ${formatTokenCount(today.cacheReadTokens)} (**${today.cacheHitPct.toFixed(1)}%** cache hit)`
+      `- **Today (local)**: ${today.sessionsCount} sessions · ${today.turns} turns · **${formatTokenCount(today.totalTokens)}** tok (${formatTokenCount(today.inputTokens)} in · ${formatTokenCount(today.outputTokens)} out · **${today.cacheHitPct.toFixed(0)}%** cache hit)`
     );
-  } else {
-    lines.push("- *No local turns recorded today yet.*");
   }
 
-  state.entries.push({
-    id: nextId("usage"),
+  return lines.join("\n");
+}
+
+async function showUsageCard({ forceRefresh = true } = {}) {
+  if (state.quotaLoading) return;
+  const cardId = nextId("usage");
+  const entry = {
+    id: cardId,
     kind: "notice",
     tone: "info",
-    title: `Usage & Context · ${state.sessionTitle || state.git.projectName || "Session"}`,
-    body: lines.join("\n"),
-  });
+    title: "Models & Quota · Refreshing…",
+    body: state.quotaSnapshot
+      ? `${formatQuotaCardBody(state.quotaSnapshot)}\n\n*Refreshing live quota from Antigravity…*`
+      : "*Checking live model quotas via official Antigravity CLI…*",
+  };
+  state.entries.push(entry);
+  state.quotaLoading = true;
   render();
+
+  try {
+    const snap = await fetchLiveQuota({ dataDir: DATA_DIR, maxAgeMs: forceRefresh ? 0 : 60_000, timeoutMs: 8000 });
+    if (snap) state.quotaSnapshot = snap;
+    const rows = normalizeQuotaBuckets(state.quotaSnapshot?.quota);
+    const lowest = rows.filter((b) => !b.disabled && b.remainingPct !== null).sort((a, b) => a.remainingPct - b.remainingPct)[0];
+    entry.tone = lowest && lowest.remainingPct <= 10 ? "error" : lowest && lowest.remainingPct <= 25 ? "warning" : "info";
+    entry.title = `Models & Quota · ${state.sessionTitle || state.git.projectName || "Antigravity"}`;
+    entry.body = formatQuotaCardBody(state.quotaSnapshot);
+  } finally {
+    state.quotaLoading = false;
+    render();
+  }
+}
+
+function refreshQuotaBackground() {
+  void fetchLiveQuota({ dataDir: DATA_DIR, maxAgeMs: 120_000, timeoutMs: 8000 })
+    .then((snap) => {
+      if (snap) {
+        state.quotaSnapshot = snap;
+        render();
+      }
+    })
+    .catch(() => {});
 }
 
 function showHelpCard() {
@@ -1609,7 +1705,7 @@ function showHelpCard() {
     "#### Built-In Commands",
     "- `/plan [task]` — toggle Plan mode, or run `/plan <task>` directly in Plan mode",
     "- `/resume` (`/switch`) — open native conversation picker (`session/list` + `session/load`)",
-    "- `/usage` (`/stats`, `/cost`) — show context fill, session token breakdown & today's local usage",
+    "- `/usage` (`/quota`, `/stats`, `/cost`) — show live remaining model quotas, reset timers & token stats",
     "- `/model [query]` · `/effort [level]` · `/mode [mode]` · `/commands` · `/hud` · `/clear` · `/exit`",
   ];
   if (acpCmdNames) {
@@ -1666,8 +1762,8 @@ async function submitText(rawText) {
     openCommandPicker("");
     return;
   }
-  if (lower === "/usage" || lower === "/stats" || lower === "/cost") {
-    showUsageCard();
+  if (lower === "/usage" || lower === "/quota" || lower === "/stats" || lower === "/cost") {
+    void showUsageCard({ forceRefresh: true });
     return;
   }
   if (lower === "/resume" || lower === "/switch" || lower === "/conversation") {
@@ -2073,7 +2169,7 @@ function handleTspEvent(ev) {
       const next = state.modeId === "plan" ? state.previousNonPlanMode || "default" : "plan";
       void setMode(next, { announce: false });
     } else if (ev.act === "open.usage") {
-      showUsageCard();
+      void showUsageCard({ forceRefresh: true });
     } else if (ev.act?.startsWith("copy.user:")) {
       const id = ev.act.slice("copy.user:".length);
       const ent = state.entries.find((e) => e.id === id);
@@ -2213,6 +2309,7 @@ async function startAcpBackend() {
   }
 
   refreshSessionUsage();
+  refreshQuotaBackground();
   render();
 }
 

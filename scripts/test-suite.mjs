@@ -463,6 +463,10 @@ await test("13. TSP reconciler ordering, non-append editor, Shift+Tab keys, usag
   const {
     readSessionTranscriptUsage,
     readTodayUsageSummary,
+    readCachedQuota,
+    writeCachedQuota,
+    normalizeQuotaBuckets,
+    formatResetCountdown,
     formatTokenCount,
     cycleEffortLevel,
     cycleModeId,
@@ -555,6 +559,27 @@ await test("13. TSP reconciler ordering, non-append editor, Shift+Tab keys, usag
   assert.equal(cycleEffortLevel("xhigh"), "low");
   assert.equal(cycleModeId("auto"), "plan");
   assert.equal(cycleModeId("plan"), "default");
+
+  // Quota cache round-trip & bucket normalization/countdown formatting
+  const nowMs = Date.parse("2026-11-24T21:26:02Z");
+  writeCachedQuota(dataDir, {
+    plan_tier: "Ultra",
+    email: "dev@example.com",
+    quota: {
+      "gemini-5h": { remaining_fraction: 0.2669, reset_time: "2026-11-24T23:26:02Z", reset_in_seconds: 7200 },
+      "3p-weekly": { remaining_fraction: 1, reset_time: "2026-12-01T21:26:02Z", reset_in_seconds: 604800 },
+    },
+  });
+  const cachedQ = readCachedQuota(dataDir);
+  assert.equal(cachedQ.planTier, "Ultra");
+  const buckets = normalizeQuotaBuckets(cachedQ.quota, nowMs);
+  assert.equal(buckets.length, 2);
+  assert.equal(buckets[0].id, "gemini-5h");
+  assert.equal(buckets[0].group, "Gemini");
+  assert.equal(Math.round(buckets[0].remainingPct), 27);
+  assert.equal(formatResetCountdown(buckets[0].resetSeconds), "2h");
+  assert.equal(buckets[1].id, "3p-weekly");
+  assert.equal(formatResetCountdown(buckets[1].resetSeconds), "7d");
 
   // `OMP_RAW_AGY=1` makes all hooks silent no-ops
   const rawPre = JSON.parse(

@@ -13,6 +13,7 @@ import path from "node:path";
 import { OMP_DARK_THEME as T, getSessionAccentHex, fgHex } from "./lib/session-color.mjs";
 import { resolveDataDir, readState, getCachedGitTelemetry } from "./lib/state.mjs";
 import { memoryRecall } from "./lib/memory-bank.mjs";
+import { writeCachedQuota } from "./lib/usage-stats.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -86,6 +87,9 @@ const p = readPayload();
 const width = Math.max(56, Number(p.terminal_width) || process.stdout.columns || 100);
 const cwd = p.workspace?.current_dir || p.workspace?.project_dir || p.cwd || process.cwd();
 const dataDir = resolveDataDir();
+if (p.quota && typeof p.quota === "object") {
+  writeCachedQuota(dataDir, p);
+}
 const pluginState = readState(dataDir);
 const git = getCachedGitTelemetry(cwd, 1500);
 
