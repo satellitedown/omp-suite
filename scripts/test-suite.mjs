@@ -518,6 +518,12 @@ await test("13. TSP reconciler ordering, non-append editor, Shift+Tab keys, usag
   // Editor must update via `set`, NEVER `["text","c","append",...]`
   assert.doesNotMatch(wire, /\["text","c","append"/);
   assert.match(wire, /\["set","c",\{"text":"hi there","cursor":8\}\]/);
+  // OSC 9;4 progress signaling (`9;4;3` busy -> `9;4;0;` idle)
+  frames.length = 0;
+  sess.setProgress(true);
+  sess.setProgress(false);
+  assert.match(frames.join(""), /\x1b\]9;4;3\x07/);
+  assert.match(frames.join(""), /\x1b\]9;4;0;\x07/);
   sess.close(true);
 
   // Local transcript usage aggregation + cycling helpers

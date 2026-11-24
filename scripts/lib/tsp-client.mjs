@@ -13,6 +13,10 @@ const PASTE_ON = "\x1b[?2004h";
 const PASTE_OFF = "\x1b[?2004l";
 const KITTY_PUSH = "\x1b[>1u";
 const KITTY_POP = "\x1b[<u";
+const OSC_PROGRESS_BUSY = "\x1b]9;4;3\x07";
+const OSC_PROGRESS_CLEAR = "\x1b]9;4;0;\x07";
+const PROGRESS_HEARTBEAT_MS = 1000;
+const CREDIT_STALL_MS = 1200;
 
 export const TSP_VERSION = 1;
 export const TSP_DEFAULT_APC_LIMIT = 65_536;
@@ -348,6 +352,9 @@ export class TspSurfaceSession {
     this.lastFocus = null;
     this.pendingRender = null;
     this.renderTimer = null;
+    this.stallTimer = null;
+    this.progressActive = false;
+    this.progressTimer = null;
     this.escTimer = null;
     this.onEvent = () => {};
     this.onKey = () => {};
@@ -402,13 +409,42 @@ export class TspSurfaceSession {
     this.output.write(encodeTspJson("o", { id, mode, title, role, chat }, this.caps.apc));
   }
 
+  setProgress(active) {
+    if (this.closed) return;
+    if (active) {
+      if (this.progressActive) return;
+      this.progressActive = true;
+      this.output.write(OSC_PROGRESS_BUSY);
+      if (!this.progressTimer) {
+        this.progressTimer = setInterval(() => {
+          if (this.progressActive && !this.closed) {
+            this.output.write(OSC_PROGRESS_BUSY);
+          }
+        }, PROGRESS_HEARTBEAT_MS);
+        this.progressTimer.unref?.();
+      }
+    } else {
+      this.progressActive = false;
+      if (this.progressTimer) {
+        clearInterval(this.progressTimer);
+        this.progressTimer = null;
+      }
+      this.output.write(OSC_PROGRESS_CLEAR);
+    }
+  }
+
   close(keep = true) {
     if (this.closed) return;
+    this.setProgress(false);
     this.closed = true;
     if (this.escTimer) clearTimeout(this.escTimer);
     if (this.renderTimer) {
       clearTimeout(this.renderTimer);
       this.renderTimer = null;
+    }
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = null;
     }
     if (this.opened) {
       this.output.write(encodeTspJson("x", { id: this.surfaceId, keep }, this.caps.apc));
@@ -429,17 +465,38 @@ export class TspSurfaceSession {
     }, delayMs);
   }
 
+  _armStallTimer() {
+    if (this.stallTimer || this.closed || !this.unacked.length) return;
+    const waitMs = Math.max(25, this.unacked[0] + CREDIT_STALL_MS - Date.now());
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = null;
+      if (this.closed || !this.opened || !this.pendingRender) return;
+      this.unacked = [];
+      this.acked = this.seq;
+      const { tree, focusId } = this.pendingRender;
+      this.pendingRender = null;
+      this.render(tree, focusId);
+    }, waitMs);
+    this.stallTimer.unref?.();
+  }
+
   render(tree, focusId = null) {
     if (!this.opened || this.closed) return;
     if (this.renderTimer) {
       clearTimeout(this.renderTimer);
       this.renderTimer = null;
     }
-    // Credit-based flow control with 3s stall safeguard
+    // Credit-based flow control with guaranteed stall-recovery timer so the final
+    // idle frame after a streaming burst can never sit unflushed in `pendingRender`.
     const now = Date.now();
-    if (this.unacked.length >= this.caps.credits && now - this.unacked[0] < 3000) {
+    if (this.unacked.length >= this.caps.credits && now - this.unacked[0] < CREDIT_STALL_MS) {
       this.pendingRender = { tree, focusId };
+      this._armStallTimer();
       return;
+    }
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = null;
     }
     if (this.unacked.length >= this.caps.credits) {
       this.unacked = [];
@@ -598,6 +655,10 @@ export class TspSurfaceSession {
             const newly = Math.min(ev.s, this.seq) - this.acked;
             this.acked = Math.min(ev.s, this.seq);
             this.unacked.splice(0, newly);
+          }
+          if (this.stallTimer && this.unacked.length < this.caps.credits) {
+            clearTimeout(this.stallTimer);
+            this.stallTimer = null;
           }
           if (this.pendingRender) {
             const { tree, focusId } = this.pendingRender;

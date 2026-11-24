@@ -31,7 +31,7 @@ import {
 } from "./lib/usage-stats.mjs";
 
 const RAW_ARGS = process.argv.slice(2);
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 
 // Parse lightweight flags while forwarding ACP-supported flags to `agy acp`
 let cwd = process.cwd();
@@ -941,6 +941,30 @@ function settleActiveAssistant() {
   state.activeAssistant = null;
 }
 
+function settleAllRunningState() {
+  settleActiveAssistant();
+  const now = Date.now();
+  for (const ent of state.entries) {
+    if (ent.kind === "assistant") {
+      ent.streaming = false;
+      if (ent.thinkingLive) {
+        ent.thinkingLive = false;
+        ent.thoughtMs = Math.max(0, now - (ent.thoughtStartMs || now));
+        ent.thoughtCollapsed = true;
+      }
+    } else if (ent.kind === "tool" && ent.status === "running") {
+      ent.status = "done";
+      ent.tookMs = state.replaying ? 0 : Math.max(0, now - (ent.startMs || now));
+      ent.collapsed = true;
+    }
+  }
+  state.activeTools.clear();
+  state.running = false;
+  state.streamTokPerSec = null;
+  state.workingLabel = "";
+  tspSession?.setProgress(false);
+}
+
 function updateStreamRate(chunkLen) {
   if (!state.running || state.replaying || !chunkLen) return;
   const now = Date.now();
@@ -1122,8 +1146,10 @@ function handleAcpMessage(msg) {
       const tcId = upd.toolCallId || nextId("tc");
       const rawIn = upd.rawInput || upd.args || {};
       const target = rawIn.CommandLine || rawIn.Path || rawIn.filePath || rawIn.pattern || rawIn.uri || "";
-      const initialStatus =
-        upd.status === "completed" ? "done" : upd.status === "failed" ? "error" : "running";
+      const rawStatus = String(upd.status || "").toLowerCase();
+      const isTerminalFail = rawStatus === "failed" || rawStatus === "error" || rawStatus === "cancelled" || rawStatus === "canceled";
+      const isTerminalOk = rawStatus === "completed" || rawStatus === "done" || rawStatus === "succeeded";
+      const initialStatus = isTerminalFail ? "error" : isTerminalOk ? "done" : "running";
       const chunkText = (upd.content || [])
         .map((c) => c.content?.text || c.text || "")
         .filter(Boolean)
@@ -1161,10 +1187,12 @@ function handleAcpMessage(msg) {
         .filter(Boolean)
         .join("\n");
       if (chunkText) ent.output = chunkText;
-      if (upd.status === "completed" || upd.status === "failed") {
-        ent.status = upd.status === "failed" ? "error" : "done";
+      const updStatus = String(upd.status || "").toLowerCase();
+      if (["completed", "done", "succeeded", "failed", "error", "cancelled", "canceled"].includes(updStatus)) {
+        const failed = updStatus === "failed" || updStatus === "error" || updStatus === "cancelled" || updStatus === "canceled";
+        ent.status = failed ? "error" : "done";
         ent.tookMs = state.replaying ? 0 : Date.now() - ent.startMs;
-        ent.collapsed = upd.status !== "failed";
+        ent.collapsed = !failed;
         state.activeTools.delete(tcId);
         if (!state.replaying) state.git = getCachedGitTelemetry(WORKSPACE_DIR, 500);
       }
@@ -1310,7 +1338,7 @@ async function loadConversation(sessionId, targetCwd = WORKSPACE_DIR) {
       cwd: targetCwd || WORKSPACE_DIR,
       mcpServers: [],
     });
-    settleActiveAssistant();
+    settleAllRunningState();
     state.replaying = false;
     state.sessionId = sess?.sessionId || sessionId;
     state.connected = true;
@@ -1733,13 +1761,17 @@ async function submitText(rawText) {
   state.streamTokPerSec = null;
   state.workingLabel = state.modeId === "plan" ? "Planning…" : "Thinking…";
   state.activeAssistant = null;
+  tspSession?.setProgress(true);
   render();
 
   try {
-    await acpRequest("session/prompt", {
+    const promptRes = await acpRequest("session/prompt", {
       sessionId: state.sessionId,
       prompt: [{ type: "text", text }],
     });
+    if (promptRes?.usage && typeof promptRes.usage.totalTokens === "number") {
+      state.usedTokens = Math.max(state.usedTokens, promptRes.usage.totalTokens);
+    }
   } catch (err) {
     state.entries.push({
       id: nextId("err"),
@@ -1749,9 +1781,7 @@ async function submitText(rawText) {
       body: err.message || String(err),
     });
   } finally {
-    settleActiveAssistant();
-    state.running = false;
-    state.streamTokPerSec = null;
+    settleAllRunningState();
     state.git = getCachedGitTelemetry(WORKSPACE_DIR, 200);
     refreshSessionUsage();
     // Surface any newly recorded TTSR alert from hooks
@@ -2117,7 +2147,7 @@ async function startAcpBackend() {
   });
   acpProc.on("exit", (code) => {
     state.connected = false;
-    state.running = false;
+    settleAllRunningState();
     if (!tspSession?.closed) {
       state.entries.push({
         id: nextId("exit"),
@@ -2230,6 +2260,7 @@ async function main() {
     role: "omp.session",
     chat: true,
   });
+  tspSession.setProgress(false);
   render();
 
   try {
